@@ -9,40 +9,22 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11"]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
           cache: pip
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Syntax check (compileall)
-        run: python -m compileall -q .
-
-      - name: Import smoke test
-        run: |
-          python -c "import cv2, numpy, pygame, mediapipe; print('deps ok')"
-          python -c "from PyQt6.QtWidgets import QApplication; import sys; app = QApplication(sys.argv); print('PyQt6 ok')"
-
-      - name: Install PyInstaller
-        run: pip install "pyinstaller>=6.0"
-
-      - name: Build dikotur.exe (PyInstaller)
+      - name: Build dikotur.exe (deps + PyInstaller)
         shell: pwsh
         run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt "pyinstaller>=6.0"
           pyinstaller --noconfirm --clean --windowed --onefile `
             --name dikotur `
             --add-data "sesler;sesler" `

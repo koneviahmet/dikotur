@@ -2,10 +2,113 @@ import sys
 import cv2
 import os
 import time
-from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QMessageBox, QGraphicsBlurEffect
-from PyQt6.QtCore import QTimer, Qt, QPoint
-from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QPainter, QPainterPath, QBrush, QColor, QFont, QFontMetrics
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+    QMessageBox,
+    QGraphicsBlurEffect,
+    QDialog,
+    QDialogButtonBox,
+    QComboBox,
+    QPushButton,
+    QFormLayout,
+)
+from PyQt6.QtCore import QTimer, Qt, QPoint, QSettings
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QFontMetrics
 import numpy as np
+
+
+def app_base_dir():
+    """PyInstaller onefile ve normal çalıştırma için uygulama kök dizini."""
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def camera_backend_candidates():
+    """OpenCV VideoCapture için platforma uygun backend sırası."""
+    if sys.platform == "darwin":
+        return [cv2.CAP_AVFOUNDATION, None]
+    if sys.platform == "win32":
+        # Windows: önce DirectShow, sonra Media Foundation (birçok webcam DSHOW ile açılır)
+        return [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
+    return [cv2.CAP_V4L2, None]
+
+
+def try_open_camera(index: int):
+    """Verilen indeks için uygun backend ile VideoCapture aç; okunabilir kare yoksa None."""
+    for backend in camera_backend_candidates():
+        try:
+            cap = (
+                cv2.VideoCapture(index, backend)
+                if backend is not None
+                else cv2.VideoCapture(index)
+            )
+        except Exception:
+            continue
+        if not cap.isOpened():
+            continue
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            return cap
+        cap.release()
+    return None
+
+
+def enumerate_camera_indices(max_index: int = 15):
+    """Açılabilen kamera indekslerini listeler (her biri kısa süre açılıp kapatılır)."""
+    found = []
+    for i in range(max_index + 1):
+        cap = try_open_camera(i)
+        if cap is not None:
+            found.append(i)
+            cap.release()
+    return found
+
+
+class SettingsDialog(QDialog):
+    """Kamera seçimi ayarları."""
+
+    def __init__(self, parent=None, current_index: int = 0):
+        super().__init__(parent)
+        self.setWindowTitle("Ayarlar")
+        self.setModal(True)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.combo = QComboBox()
+        self.combo.setMinimumWidth(280)
+        form.addRow("Kamera:", self.combo)
+        layout.addLayout(form)
+
+        refresh = QPushButton("Kameraları yenile")
+        refresh.clicked.connect(self._populate_cameras)
+        layout.addWidget(refresh)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._populate_cameras()
+        idx = self.combo.findData(current_index)
+        if idx >= 0:
+            self.combo.setCurrentIndex(idx)
+
+    def _populate_cameras(self):
+        self.combo.clear()
+        for cam_index in enumerate_camera_indices():
+            self.combo.addItem(f"Kamera {cam_index}", cam_index)
+        if self.combo.count() == 0:
+            self.combo.addItem("(Kamera bulunamadı)", -1)
+
+    def selected_camera_index(self) -> int:
+        data = self.combo.currentData()
+        return int(data) if data is not None else -1
 
 # Ses çalma için pygame
 try:
@@ -43,7 +146,8 @@ class CameraWindow(QMainWindow):
         self.poor_posture_start_time = None  # Kötü duruş başlangıç zamanı
         self.sound_played = False  # Ses çalındı mı?
         self.blur_overlay = None  # Blur overlay penceresi
-        self.audio_file_path = os.path.join(os.path.dirname(__file__), "sesler", "muhammetdikotur.mp3")
+        self.audio_file_path = os.path.join(app_base_dir(), "sesler", "muhammetdikotur.mp3")
+        self.settings = QSettings("koneviahmet", "dikotur")
         
         # Duruş tespiti için değişkenler
         if POSTURE_AVAILABLE:
@@ -92,6 +196,9 @@ class CameraWindow(QMainWindow):
             }
         """)
         self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.camera_label.setWordWrap(True)
+        self.camera_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.camera_label.customContextMenuRequested.connect(self._on_camera_context_menu)
         layout.addWidget(self.camera_label)
         
         # Çift tıklama için timer
@@ -100,59 +207,82 @@ class CameraWindow(QMainWindow):
         self.double_click_timer.timeout.connect(self.toggle_shape)
         self.click_count = 0
         
-        # Kamera başlat - macOS için farklı backend'ler dene
         self.cap = None
-        
-        # Önce AVFoundation dene
-        try:
-            self.cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
-            if self.cap.isOpened():
-                ret, test_frame = self.cap.read()
-                if ret:
-                    print("✅ AVFoundation backend çalışıyor")
-                else:
-                    self.cap.release()
-                    self.cap = None
-        except:
-            self.cap = None
-        
-        # AVFoundation çalışmazsa varsayılan backend'i dene
-        if self.cap is None:
-            try:
-                self.cap = cv2.VideoCapture(0)
-                if self.cap.isOpened():
-                    ret, test_frame = self.cap.read()
-                    if ret:
-                        print("✅ Varsayılan backend çalışıyor")
-                    else:
-                        self.cap.release()
-                        self.cap = None
-            except:
-                self.cap = None
-        
-        if self.cap is None or not self.cap.isOpened():
-            QMessageBox.critical(self, "Hata", "Kamera açılamadı! Lütfen kamera izinlerini kontrol edin.")
-            return
-        
-        # Kamera ayarları
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
-        
-        # Kamera hazır olduğundan emin ol - daha fazla frame atla
-        print("Kamera hazırlanıyor...")
-        for i in range(20):  # Daha fazla frame atla
-            ret, _ = self.cap.read()
-            if ret:
-                print(f"✅ Kamera hazır! {i+1} frame atlandı")
-                break
-            else:
-                print(f"Frame {i+1} atlandı...")
+        initial_index = self._saved_camera_index()
+        if not self.start_camera(initial_index, save_index=True):
+            self._set_camera_placeholder(True)
+            QMessageBox.information(
+                self,
+                "Kamera",
+                "Kamera açılamadı.\nÖnizleme alanına sağ tıklayıp Ayarlar'dan kamera seçebilir veya izinleri kontrol edebilirsiniz.",
+            )
         
         # Timer ile kamera görüntüsünü güncelle
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(30)  # ~30 FPS
+
+    def _saved_camera_index(self) -> int:
+        v = self.settings.value("camera/index", 0)
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    def _release_camera(self):
+        if getattr(self, "cap", None) is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+
+    def _set_camera_placeholder(self, active: bool):
+        """Kamera yokken etikette kısa yönerge göster."""
+        if active:
+            self.camera_label.clear()
+            self.camera_label.setPixmap(QPixmap())
+            self.camera_label.setText("Kamera yok\nSağ tık → Ayarlar")
+        else:
+            self.camera_label.setText("")
+
+    def start_camera(self, index: int, save_index: bool = True) -> bool:
+        """Kamerayı verilen indeksle aç. Başarılıysa True."""
+        self._release_camera()
+        cap = try_open_camera(index)
+        if cap is None:
+            self._set_camera_placeholder(True)
+            return False
+        self.cap = cap
+        if save_index:
+            self.settings.setValue("camera/index", index)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        print("Kamera hazırlanıyor...")
+        for i in range(20):
+            ret, _ = self.cap.read()
+            if ret:
+                print(f"✅ Kamera hazır (indeks {index}), {i + 1} kare atlandı")
+                break
+            print(f"Frame {i + 1} atlandı...")
+        self._set_camera_placeholder(False)
+        if hasattr(self, "frame_error_count"):
+            self.frame_error_count = 0
+        return True
+
+    def _on_camera_context_menu(self, pos: QPoint):
+        self.open_settings()
+
+    def open_settings(self):
+        dlg = SettingsDialog(self, self._saved_camera_index())
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        idx = dlg.selected_camera_index()
+        if idx < 0:
+            return
+        if not self.start_camera(idx, save_index=True):
+            QMessageBox.warning(self, "Kamera", "Seçilen kamera açılamadı.")
         
     def update_frame(self):
         if self.cap is None or not self.cap.isOpened():
@@ -196,6 +326,7 @@ class CameraWindow(QMainWindow):
                 
                 # Pixmap'i label'a ayarla
                 if not pixmap.isNull():
+                    self.camera_label.setText("")
                     self.camera_label.setPixmap(pixmap)
                     # İlk başarılı görüntüde mesaj yazdır
                     if not hasattr(self, 'first_frame_shown'):
@@ -346,8 +477,7 @@ class CameraWindow(QMainWindow):
 
     def closeEvent(self, event):
         # Kamera kaynağını serbest bırak
-        if hasattr(self, 'cap') and self.cap is not None:
-            self.cap.release()
+        self._release_camera()
         
         # Duruş tespiti kaynaklarını temizle
         if hasattr(self, 'posture_detector') and self.posture_detector is not None:
@@ -435,7 +565,9 @@ class BlurOverlayWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    
+    app.setOrganizationName("koneviahmet")
+    app.setApplicationName("dikotur")
+
     # Ana pencere
     window = CameraWindow()
     window.show()
