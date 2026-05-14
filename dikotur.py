@@ -33,9 +33,26 @@ def camera_backend_candidates():
     if sys.platform == "darwin":
         return [cv2.CAP_AVFOUNDATION, None]
     if sys.platform == "win32":
-        # Windows: önce DirectShow, sonra Media Foundation (birçok webcam DSHOW ile açılır)
-        return [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
+        # Windows 10+: çoğu dahili/built-in kamera MSMF ile daha stabil; DSHOW yedek.
+        return [cv2.CAP_MSMF, cv2.CAP_DSHOW, None]
     return [cv2.CAP_V4L2, None]
+
+
+def _capture_set_buffer_size(cap, size: int = 1) -> None:
+    """DSHOW/MSMF gecikme ve takılma için küçük buffer (destekleniyorsa)."""
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, size)
+    except Exception:
+        pass
+
+
+def _capture_warmup(cap, max_attempts: int = 30) -> bool:
+    """İlk kareler boş veya siyah olabildiği için birkaç okuma at."""
+    for _ in range(max_attempts):
+        ret, frame = cap.read()
+        if ret and frame is not None and getattr(frame, "size", 0) > 0:
+            return True
+    return False
 
 
 def try_open_camera(index: int):
@@ -51,8 +68,9 @@ def try_open_camera(index: int):
             continue
         if not cap.isOpened():
             continue
-        ret, frame = cap.read()
-        if ret and frame is not None:
+        if sys.platform == "win32":
+            _capture_set_buffer_size(cap, 1)
+        if _capture_warmup(cap):
             return cap
         cap.release()
     return None
@@ -256,9 +274,14 @@ class CameraWindow(QMainWindow):
         self.cap = cap
         if save_index:
             self.settings.setValue("camera/index", index)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        if sys.platform == "win32":
+            # Birçok Windows sürücüsü 640x480/FPS zorlamasında boş kare veya kilitlenme verir;
+            # native çözünürlük + yazılımda resize daha güvenilir.
+            _capture_set_buffer_size(self.cap, 1)
+        else:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
         print("Kamera hazırlanıyor...")
         for i in range(20):
             ret, _ = self.cap.read()
@@ -312,7 +335,11 @@ class CameraWindow(QMainWindow):
                         self.posture_enabled = False
                 
                 # BGR'den RGB'ye çevir
+                if len(frame.shape) == 2:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
                 rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                # Windows/MSMF bazen stride bozuk döner; QImage için contiguous gerekir
+                rgb_image = np.ascontiguousarray(rgb_image)
                 
                 # QImage oluştur - PyQt6 için doğru format
                 h, w, ch = rgb_image.shape
