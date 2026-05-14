@@ -36,3 +36,26 @@ jobs:
         run: |
           python -c "import cv2, numpy, pygame, mediapipe; print('deps ok')"
           python -c "from PyQt6.QtWidgets import QApplication; import sys; app = QApplication(sys.argv); print('PyQt6 ok')"
+
+      - name: Install PyInstaller
+        run: pip install "pyinstaller>=6.0"
+
+      - name: Build dikotur.exe (PyInstaller)
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onefile `
+            --name dikotur `
+            --add-data "sesler;sesler" `
+            --hidden-import posture_detector `
+            --collect-all mediapipe `
+            --collect-all PyQt6 `
+            --collect-all cv2 `
+            --collect-all pygame `
+            dikotur.py
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: dikotur-windows-exe
+          path: dist/dikotur.exe
+          if-no-files-found: error
