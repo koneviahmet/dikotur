@@ -453,12 +453,12 @@ class CameraWindow(QMainWindow):
             
             # 3 saniye geçtiyse ve ses çalınmadıysa ses çal
             elapsed = current_time - self.poor_posture_start_time
-            if elapsed >= 3.0 and not self.sound_played:
+            if elapsed >= 2.0 and not self.sound_played:
                 self.play_warning_sound()
                 self.sound_played = True
             
             # 10 saniye geçtiyse blur ekranı göster
-            if elapsed >= 10.0:
+            if elapsed >= 8.0:
                 if self.blur_overlay is None or not self.blur_overlay.isVisible():
                     self.show_blur_overlay()
         else:
