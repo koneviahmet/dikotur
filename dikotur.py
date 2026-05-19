@@ -314,26 +314,24 @@ class CameraWindow(QMainWindow):
         ret, frame = self.cap.read()
         if ret and frame is not None:
             try:
-                # Görüntüyü küçült
-                frame = cv2.resize(frame, (316, 236))  # Kenarlık için biraz küçük
-                
-                # Yatay simetri (ayna efekti) uygula
-                frame = cv2.flip(frame, 1)  # 1 = yatay simetri
-                
-                # Duruş tespiti yap (eğer etkinse)
+                # Ayna; duruş analizi küçültmeden önce (MediaPipe için yeterli çözünürlük)
+                frame = cv2.flip(frame, 1)
+
                 if self.posture_enabled and self.posture_detector:
                     try:
-                        # Yazı gösterme durumunu güncelle
                         self.posture_detector.set_show_text(self.show_posture_text)
-                        frame, posture_score, is_good_posture = self.posture_detector.analyze_posture(frame)
+                        frame, posture_score, is_good_posture = (
+                            self.posture_detector.analyze_posture(frame)
+                        )
                         self.update_border_color(is_good_posture)
-                        # Duruş uyarı sistemini kontrol et
                         self.check_posture_warnings(is_good_posture)
                     except Exception as e:
-                        # Silently disable posture detection on error
                         print(f"⚠️  Posture detection error: {e}")
                         self.posture_enabled = False
-                
+
+                # Önizleme boyutu (pose analizi sonrası)
+                frame = cv2.resize(frame, (316, 236))
+
                 # BGR'den RGB'ye çevir
                 if len(frame.shape) == 2:
                     frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
